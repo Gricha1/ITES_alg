@@ -19,6 +19,10 @@ from safety_gym_wrapper.experience_collection import get_safetydataset_as_random
 from safety_gym_wrapper.render_utils.utils import get_renderer
 from safety_ant_maze_pusher_envs.create_env_utils import create_env
 from bullet_safety_gym_env.utills_env_create import create_bullet_safety_gym_env
+from polamp_wrapper.create_env import create_polamp_env
+from polamp_wrapper.visualize import (
+    log_polamp_eval_artifacts, plot_polamp_trajectory, render_polamp_topdown_frame,
+)
 
 from hrac.safe_mpc_controller import SafeMPC
 import hrac.utils as utils
@@ -63,8 +67,10 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                 safety_boundary, safe_dataset = env.get_safety_bounds(get_safe_unsafe_dataset=True)
             elif env_name == "SafePusher":
                 safety_boundary = env.get_safety_bounds(get_safe_unsafe_dataset=True)
+            elif env_name == "SafePolamp":
+                safety_boundary = None
             if args.cost_model:
-                if (env_name == "SafePusher" or env_name == "SafeGym"):
+                if (env_name == "SafePusher" or env_name == "SafeGym" or env_name == "SafePolamp"):
                     safe_dataset = copy.copy(env.safe_dataset[0]), copy.copy(env.safe_dataset[1]), copy.copy(env.safe_dataset[2])
                 if not args.domain_name == "BulletSafeGym":
                     if "SafeAntMaze" in env_name:
@@ -73,7 +79,7 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                         x = np.zeros((len(g), env.state_dim))
                         x_np = np.array(x, dtype=np.float32)
                         true = safe_dataset[1]
-                    elif env_name == "SafeGym" or env_name == "SafePusher":
+                    elif env_name == "SafeGym" or env_name == "SafePusher" or env_name == "SafePolamp":
                         g = safe_dataset[0]
                         g_np = np.array(g, dtype=np.float32)
                         x = safe_dataset[1]
@@ -101,17 +107,31 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                 obs = env.reset(validate=True)
             elif "SafeAntMaze" in env_name:
                 obs = env.reset(eval_idx=eval_ep)
+            elif env_name == "SafePolamp":
+                obs = env.reset(eval_idx=eval_ep)
             else:
                 obs = env.reset()
             goal = obs["desired_goal"]
             state = obs["observation"]
             achieved_goal = obs["achieved_goal"]
 
-            # render env
+            # render env / POLAMP trajectory logging
+            plot_polamp = (
+                env_name == "SafePolamp"
+                and getattr(args, "polamp_plot_trajectory", False)
+                and eval_ep == eval_image_ep
+            )
             if eval_ep == eval_image_ep:
-                if not args.validation_without_image:
+                if plot_polamp:
+                    polamp_trajectory_x = []
+                    polamp_trajectory_y = []
+                    polamp_subgoals_x = []
+                    polamp_subgoals_y = []
+                    polamp_topdown_screens = []
+                    polamp_env_render_screens = []
+                    polamp_start_theta = None
+                elif not args.validation_without_image:
                     positions_screens = []
-                    #if env_name == "SafePusher":
                     env_screens = []
                 imagined_state_freq = 100
                 prev_imagined_state = None
@@ -170,6 +190,14 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                                                             manager_policy=manager_policy,
                                                             )
                     episode_subgoals_count += 1
+                    if plot_polamp and args.manager_algo != "none":
+                        absolute_goal = manager_policy.absolute_goal
+                        if absolute_goal:
+                            sg_xy = np.array(subgoal[:2], dtype=np.float32)
+                        else:
+                            sg_xy = np.array(achieved_goal[:2], dtype=np.float32) + np.array(subgoal[:2], dtype=np.float32)
+                        polamp_subgoals_x.append(float(sg_xy[0]))
+                        polamp_subgoals_y.append(float(sg_xy[1]))
 
                 step_count += 1
                 global_steps += 1
@@ -193,6 +221,9 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                 elif "Pusher" in env_name:
                     goals_achieved += 1.0 * info["is_success"]
                     episode_goals_achieved += 1.0 * info["is_success"]
+                elif env_name == "SafePolamp":
+                    goals_achieved += 1.0 * info.get("goal_achieved", False)
+                    episode_goals_achieved += 1.0 * info.get("goal_achieved", False)
                 elif args.domain_name == "BulletSafeGym":
                     goals_achieved = 0
                     episode_goals_achieved = 0
@@ -200,8 +231,32 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                     goals_achieved += 1
                     done = True
 
+                if args.manager_algo == "none" and plot_polamp:
+                    if step_count == 1:
+                        polamp_subgoals_x.append(float(goal[0]))
+                        polamp_subgoals_y.append(float(goal[1]))
+
                 # render env
-                if not args.validation_without_image and not (renderer is None) and eval_ep == eval_image_ep:
+                if plot_polamp:
+                    if step_count == 1 and polamp_start_theta is None:
+                        polamp_start_theta = float(info["agent_state"][2])
+                    polamp_trajectory_x.append(float(info["agent_state"][0]))
+                    polamp_trajectory_y.append(float(info["agent_state"][1]))
+                    if step_count == 1 or step_count % 2 == 0:
+                        polamp_topdown_screens.append(
+                            render_polamp_topdown_frame(
+                                env,
+                                polamp_trajectory_x,
+                                polamp_trajectory_y,
+                                polamp_subgoals_x,
+                                polamp_subgoals_y,
+                                info,
+                                step_count=step_count,
+                            )
+                        )
+                        if getattr(args, "polamp_plot_env_render", False):
+                            polamp_env_render_screens.append(env.render(mode="rgb_array"))
+                elif not args.validation_without_image and not (renderer is None) and eval_ep == eval_image_ep:
                     if step_count == 1:
                         renderer.setup_renderer()
                     debug_info = {}
@@ -475,6 +530,28 @@ def evaluate_policy(env, env_name, manager_policy, controller_policy, cost_model
                 prev_action = action 
 
                 current_trajectory.append(state)
+
+            if plot_polamp and len(polamp_trajectory_x) > 0:
+                traj_info = dict(info)
+                if polamp_start_theta is not None:
+                    traj_info["start_theta"] = polamp_start_theta
+                traj_image = plot_polamp_trajectory(
+                    env,
+                    polamp_trajectory_x,
+                    polamp_trajectory_y,
+                    polamp_subgoals_x,
+                    polamp_subgoals_y,
+                    traj_info,
+                )
+                log_polamp_eval_artifacts(
+                    writer,
+                    experiment_comet,
+                    traj_image,
+                    polamp_topdown_screens,
+                    total_timesteps,
+                    eval_ep,
+                    env_render_frames=polamp_env_render_screens if getattr(args, "polamp_plot_env_render", False) else None,
+                )
 
             per_traj_action_generation_times.append(np.mean(per_step_action_generation_times))
             if "Safe" in env_name:
@@ -789,8 +866,44 @@ def run_hrac(args):
             # robot_xy = [:2]
             return state[:, :2]
         controller_goal_dim = goal_dim
+    elif args.domain_name == "Polamp":
+        env, state_dim, goal_dim, action_dim, renderer = create_polamp_env(args)
+        if args.cost_model:
+            if args.validate:
+                cost_dataset_seeds = [213]
+            else:
+                cost_dataset_seeds = [34, 943]
+            safe_dataset = []
+            for seed_ in cost_dataset_seeds:
+                env.seed(seed_)
+                print("get safedataset polamp!!!", f"seed={seed_}")
+                start_time = time.time()
+                safe_dataset.extend(get_safetydataset_as_random_experience(
+                    env, frame_stack_num=args.cm_frame_stack_num))
+                end_time = time.time()
+                print("time for safe dataset:", end_time - start_time)
+            env.safe_dataset = safe_dataset
+        env.seed(args.seed)
+        polamp_frame_size = env.frame_size
+        low = np.array((-5.0, -5.0))
+        polamp_anet_center = np.array([17.5, 15.5], dtype=np.float32)
+        polamp_anet_scale = np.array([22.5, 20.5], dtype=np.float32)
+
+        def phi(state):
+            return state[:, -polamp_frame_size:-polamp_frame_size + 2]
+        def pose(state):
+            return state[:, -polamp_frame_size:-polamp_frame_size + 2]
+        def anet_phi_np(goal):
+            goal = np.asarray(goal, dtype=np.float32)
+            return (goal - polamp_anet_center) / polamp_anet_scale
+        controller_goal_dim = goal_dim
     else:
-        assert 1 == 0, "there is no {args.domain_name} domain of envs"
+        assert 1 == 0, f"there is no {args.domain_name} domain of envs"
+
+    if args.domain_name != "Polamp":
+        anet_phi_np = None
+        anet_phi_center = None
+        anet_phi_scale = None
 
     max_action = float(env.action_space.high[0])
     policy_noise = args.train_policy_noise
@@ -821,9 +934,23 @@ def run_hrac(args):
 
     # Set logger(Wandb logger, SummaryWriter logger) and seeds
     if args.use_comet:
+        env_display = {
+            "SafeAntMazeC": "AntMazeCshape",
+            "SafeAntMazeW": "AntMazeWshape",
+            "SafeAntMazeS": "AntMazeSshape",
+            "SafePolamp": "Polamp",
+            "SafePusher": "Pusher",
+            "SafeGym": "SafeGym",
+        }.get(args.env_name, args.env_name)
+        comet_experiment_name = f"ITES {env_display}, K(img)={args.img_horizon}"
+        os.environ["COMET_EXPERIMENT_NAME"] = comet_experiment_name
         comet_ml.login()
         experiment_comet = comet_ml.start(project_name="ites")
-        experiment_comet.log_parameters(args)
+        if hasattr(experiment_comet, "set_name"):
+            experiment_comet.set_name(comet_experiment_name)
+        # Namespace is not always accepted; log a plain dict for full restore in Comet UI
+        experiment_comet.log_parameters(vars(args))
+        print(f"Comet experiment name: {comet_experiment_name}")
     if not args.not_use_wandb:
         wandb_run_name = f"HRAC_{args.env_name}"
         wandb_run_name = wandb_run_name + "_" + args.wandb_postfix
@@ -889,7 +1016,7 @@ def run_hrac(args):
             coef_safety_modelfree=args.coef_safety_modelfree,
             testing_mean_wm=args.testing_mean_wm,
             subgoal_grad_clip=args.subgoal_grad_clip,
-            lidar_observation=True if args.domain_name == "Safexp" else False,
+            lidar_observation=(args.domain_name in ("Safexp", "Polamp")),
             algo=args.algo,
             planner_start_step=args.planner_start_step,
             planner_cov_sampling=args.landmark_sampling,
@@ -902,7 +1029,9 @@ def run_hrac(args):
             delta=args.delta,
             landmark_loss_coeff=args.landmark_loss_coeff,
             hidden_size=args.man_hidden_size,
-            phi=phi,            
+            phi=phi,
+            anet_phi_center=anet_phi_center,
+            anet_phi_scale=anet_phi_scale,
             args=args
         )
     else:
@@ -1022,7 +1151,7 @@ def run_hrac(args):
     model_type='pytorch'
     if args.reward_model:
         reward_model = hrac.RewardModel(state_dim, goal_dim, action_dim, 
-                                        lidar_observation=True if args.domain_name == "Safexp" else False, 
+                                        lidar_observation=(args.domain_name in ("Safexp", "Polamp")), 
                                         frame_stack_num=args.cm_frame_stack_num,
                                         safe_model_loss_coef=args.safe_model_loss_coef, 
                                         lr=args.cm_lr,
@@ -1051,14 +1180,14 @@ def run_hrac(args):
 
     if args.cost_model:
         cost_model = hrac.CostModel(state_dim, goal_dim, 
-                                    lidar_observation=True if args.domain_name == "Safexp" else False, 
+                                    lidar_observation=(args.domain_name in ("Safexp", "Polamp")), 
                                     frame_stack_num=args.cm_frame_stack_num,
                                     safe_model_loss_coef=args.safe_model_loss_coef, 
                                     lr=args.cm_lr,
                                     cm_hidden_size=args.cm_hidden_size,
                                     regression_cost_model=args.regression_cost_model,
                                     phi=phi)
-        if args.domain_name == "Safexp" or args.cost_model_trajectory_buffer:
+        if args.domain_name in ("Safexp", "Polamp") or args.cost_model_trajectory_buffer:
             cost_model_buffer = utils.CostModelTrajectoryBuffer(maxsize=args.cost_model_buffer_size,
                                                                 frame_stack_num=args.cm_frame_stack_num,
                                                                 two_buffers=args.cost_model_two_buffers,
@@ -1240,7 +1369,7 @@ def run_hrac(args):
                                       total_timesteps=total_timesteps)
                 if args.cost_model and args.cm_pretrain:
                     train_cost_model(cost_model_buffer,
-                                     cost_model_iterations=env.max_len if args.domain_name == "Safexp" else 600,
+                                     cost_model_iterations=env.max_len if args.domain_name in ("Safexp", "Polamp") else 600,
                                      cost_model_batch_size=args.cost_model_batch_size,
                                      total_timesteps=total_timesteps,
                                      episode_num=episode_num)
@@ -1373,6 +1502,10 @@ def run_hrac(args):
                         writer.add_scalar("data/manager_actor_loss", man_act_loss, total_timesteps)
                         writer.add_scalar("data/manager_critic_loss", man_crit_loss, total_timesteps)
                         writer.add_scalar("data/manager_goal_loss", man_goal_loss, total_timesteps)
+                        if args.use_comet:
+                            experiment_comet.log_metric("data/manager_actor_loss", float(man_act_loss), step=total_timesteps)
+                            experiment_comet.log_metric("data/manager_critic_loss", float(man_crit_loss), step=total_timesteps)
+                            experiment_comet.log_metric("data/manager_goal_loss", float(man_goal_loss), step=total_timesteps)
                         for key_ in debug_maganer_info:
                             if type(debug_maganer_info[key_]) == list:
                                 debug_maganer_info[key_] = np.mean(debug_maganer_info[key_])
@@ -1381,6 +1514,8 @@ def run_hrac(args):
                                 experiment_comet.log_metric(f"data/{key_}", debug_maganer_info[key_], step=total_timesteps)
                         if not(man_safety_loss is None):
                             writer.add_scalar("data/manager_safety_loss", man_safety_loss, total_timesteps)
+                            if args.use_comet:
+                                experiment_comet.log_metric("data/manager_safety_loss", float(man_safety_loss), step=total_timesteps)
                         if episode_num % 10 == 0:
                             print("Manager actor loss: {:.3f}".format(man_act_loss))
                             print("Manager critic loss: {:.3f}".format(man_crit_loss))
@@ -1446,6 +1581,9 @@ def run_hrac(args):
                                                                       device, args, exp_num)
                         
                         writer.add_scalar("data/a_net_loss", a_loss, total_timesteps)
+                        if args.use_comet:
+                            experiment_comet.log_metric("data/a_net_loss", float(a_loss), step=total_timesteps)
+                            experiment_comet.log_metric("data/a_net_n_states", float(n_states), step=total_timesteps)
 
 
                     if not args.manager_algo == "none" and len(manager_transition[-2]) != 1:                    
@@ -1460,7 +1598,8 @@ def run_hrac(args):
                 achieved_goal = obs["achieved_goal"]
 
                 traj_buffer.create_new_trajectory()
-                traj_buffer.append(achieved_goal)
+                traj_goal = anet_phi_np(achieved_goal) if anet_phi_np is not None else achieved_goal
+                traj_buffer.append(traj_goal)
                 if args.cost_model:
                     if len(cost_model_buffer.trajectory) != 0:
                         cost_model_buffer.add_trajectory_to_buffer()
@@ -1530,7 +1669,8 @@ def run_hrac(args):
                 manager_transition[-1].append(action)
                 manager_transition[-2].append(next_state)
             ep_manager_reward += manager_reward * args.man_rew_scale
-            traj_buffer.append(next_achieved_goal)
+            traj_goal = anet_phi_np(next_achieved_goal) if anet_phi_np is not None else next_achieved_goal
+            traj_buffer.append(traj_goal)
 
             if not args.manager_algo == "none" or (args.manager_algo == "none" and args.self_td3_reward):
                 controller_reward = calculate_controller_reward(achieved_goal, 
@@ -1555,7 +1695,7 @@ def run_hrac(args):
             else:
                 ctrl_done = done
 
-            if (args.domain_name == "Safexp" and args.cost_model) or args.cost_model_trajectory_buffer:
+            if (args.domain_name in ("Safexp", "Polamp") and args.cost_model) or args.cost_model_trajectory_buffer:
                 cost_model_buffer.append(next_achieved_goal, next_state, info["safety_cost"])
             if args.world_model:
                 world_model_buffer.add(

@@ -4,6 +4,8 @@ else
     seed=$1
 fi
 
+export COMET_API_KEY="${COMET_API_KEY:-3OfuYHwcRgIwG7DzgzJ190igY}"
+
 cd ../..
 python main.py --seed $seed \
                --env_name SafeAntMazeS \
@@ -19,6 +21,7 @@ python main.py --seed $seed \
                --coef_safety_modelfree 800 \
                --controller_algo "td3_img_safe" \
                --controller_safety_coef 6 \
+               --img_horizon 20 \
                --max_timesteps 4000000 \
                --wandb_postfix "" \
                --not_use_wandb \

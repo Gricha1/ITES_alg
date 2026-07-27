@@ -54,6 +54,13 @@ if __name__ == "__main__":
     parser.add_argument("--pseudo_lidar", action="store_true", default=False)
     ## safety bullet
     parser.add_argument("--bullet_env_tan_cost", action="store_true", default=False)
+    ## polamp
+    parser.add_argument("--polamp_dataset", default="cross_dataset_test_level_2", type=str)
+    parser.add_argument("--polamp_uniform_feasible_train_dataset", action="store_true", default=False)
+    parser.add_argument("--polamp_random_train_dataset", action="store_true", default=False)
+    parser.add_argument("--polamp_plot_trajectory", action="store_true", default=False)
+    parser.add_argument("--polamp_plot_env_render", action="store_true", default=False,
+                        help="Also log lidar/env.render video (SGSafe render mode); default is top-down GIF only")
 
     # Adjacency Network Parameters    
     parser.add_argument("--a_net_discretization_koef", default=1.0, type=float) # 50_000

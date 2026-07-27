@@ -77,6 +77,8 @@ class Manager(object):
                  landmark_loss_coeff=0.,
                  hidden_size=300,
                  phi=None,
+                 anet_phi_center=None,
+                 anet_phi_scale=None,
                  args=None
                  ):
         
@@ -85,6 +87,14 @@ class Manager(object):
         self.args = args
 
         self.phi = phi
+        if anet_phi_center is not None:
+            self.anet_phi_center = torch.tensor(
+                anet_phi_center, dtype=torch.float32)
+            self.anet_phi_scale = torch.tensor(
+                anet_phi_scale, dtype=torch.float32)
+        else:
+            self.anet_phi_center = None
+            self.anet_phi_scale = None
         self.scale = scale
         self.torch_scale = torch.tensor(self.scale).type('torch.FloatTensor').to(device)
         self.actor = ManagerActor(state_dim, goal_dim, action_dim,
@@ -199,6 +209,13 @@ class Manager(object):
         else:
             return self.actor(state, goal).squeeze()
 
+    def _anet_coords(self, coords):
+        if self.anet_phi_center is None:
+            return coords
+        center = self.anet_phi_center.to(coords.device)
+        scale = self.anet_phi_scale.to(coords.device)
+        return (coords[..., :self.action_dim] - center) / scale
+
     def value_estimate(self, state, goal, subgoal):
         return self.critic(state, goal, subgoal)
     
@@ -245,8 +262,10 @@ class Manager(object):
         scaled_norm_direction = var(torch.FloatTensor([0.] * self.action_dim))
         gen_subgoal = actions if self.absolute_goal else achieved_goal + actions
         if not(a_net is None):
+            ag_for_anet = self._anet_coords(achieved_goal)
+            sg_for_anet = self._anet_coords(gen_subgoal)
             goal_loss = torch.clamp(F.pairwise_distance(
-                a_net(achieved_goal), a_net(gen_subgoal)) - r_margin, min=0.).mean()
+                a_net(ag_for_anet), a_net(sg_for_anet)) - r_margin, min=0.).mean()
         
         ld_loss = None
         if not selected_landmark is None:
@@ -256,7 +275,9 @@ class Manager(object):
                 batch_landmarks = selected_landmark.clone()
             else:
                 batch_landmarks, scaled_norm_direction = self.get_pseudo_landmark(achieved_goal, selected_landmark)
-            ld_loss = torch.clamp(F.pairwise_distance(a_net(batch_landmarks), a_net(gen_subgoal)) - r_margin, min=0.).mean()
+            ld_loss = torch.clamp(F.pairwise_distance(
+                a_net(self._anet_coords(batch_landmarks)),
+                a_net(self._anet_coords(gen_subgoal))) - r_margin, min=0.).mean()
             
         # ITES high level cost loss
         safety_losses = {}
