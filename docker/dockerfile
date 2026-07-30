@@ -1,7 +1,8 @@
-FROM continuumio/miniconda3
+# latest miniconda ships anaconda-auth (needs py>=3.9), so pin an older tag for py3.8.5
+FROM continuumio/miniconda3:4.9.2
 
 # install python 3.8.5
-RUN conda install python=3.8.5
+RUN conda install -y python=3.8.5
 
 RUN echo '\
    Acquire::Retries "100";\
@@ -13,32 +14,40 @@ RUN echo '\
    Debug::Acquire::https "true";\
    ' > /etc/apt/apt.conf.d/99custom
 
+# buster is EOL — official mirrors 404, use archive
+RUN sed -i 's|deb.debian.org|archive.debian.org|g; s|security.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+    && sed -i '/buster-updates/d' /etc/apt/sources.list \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+
 # install mujoco
 RUN apt-get update
 RUN apt-get install build-essential --yes
 RUN cd /root \
     && mkdir .mujoco \
     && wget https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz \
-    && tar -xf mujoco210-linux-x86_64.tar.gz -C .mujoco \
-    && export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/root/.mujoco/mujoco210/bin
+    && tar -xf mujoco210-linux-x86_64.tar.gz -C .mujoco
+ENV LD_LIBRARY_PATH=/root/.mujoco/mujoco210/bin:${LD_LIBRARY_PATH}
 
-
-# install mujoco_py
+# install mujoco_py (needs -lGL / glew for first-time cymj build)
 RUN apt-get install -y \
     libosmesa6-dev \
+    libgl1-mesa-dev \
+    libgl1-mesa-glx \
+    libglew-dev \
     patchelf
-    #libgl1-mesa-dev \
-    #libgl1-mesa-glx \
-    #libglew-dev \
-    #libosmesa6-dev \
-    #software-properties-common \
-    #patchelf
+# conda's ld ignores system lib paths → "cannot find -lGL" when building cymj
+RUN rm -f /opt/conda/compiler_compat/ld
 RUN pip install onnxruntime free-mujoco-py
+# compile cymj at image build time (not on first training import)
+RUN python -c "import mujoco_py; print('mujoco_py ok')"
 
 # install torch with cuda support
-RUN pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113 \
-    && pip install tensorflow \
-    && pip install wandb moviepy opencv-python
+# typing-extensions>=4.14 needs py>=3.9; pin for py3.8
+# moviepy>=2 needs numpy>=1.25 (no py3.8 wheels)
+RUN pip install "typing-extensions==4.13.2" \
+    && pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113 \
+    && pip install "tensorflow==2.13.1" \
+    && pip install "wandb==0.16.6" "moviepy==1.0.3" "opencv-python==4.8.1.78"
 
 # fixed&additional pip deps
 #RUN apt-get install libopenmpi-dev

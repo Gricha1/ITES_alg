@@ -21,7 +21,7 @@ python main.py --seed $seed \
                --manager_algo td3_adj_safe_cls_high_lag \
                --coef_safety_modelfree 800 \
                --controller_algo "td3_img_safe" \
-               --controller_safety_coef 6 \
+               --controller_safety_coef 0.1 \
                --img_horizon 20 \
                --max_timesteps 4000000 \
                --wandb_postfix "" \

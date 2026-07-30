@@ -19,10 +19,17 @@ from safety_gym_wrapper.experience_collection import get_safetydataset_as_random
 from safety_gym_wrapper.render_utils.utils import get_renderer
 from safety_ant_maze_pusher_envs.create_env_utils import create_env
 from bullet_safety_gym_env.utills_env_create import create_bullet_safety_gym_env
-from polamp_wrapper.create_env import create_polamp_env
-from polamp_wrapper.visualize import (
-    log_polamp_eval_artifacts, plot_polamp_trajectory, render_polamp_topdown_frame,
-)
+# polamp_env/lib often missing in this checkout; SafeAntMaze does not need POLAMP
+try:
+    from polamp_wrapper.create_env import create_polamp_env
+    from polamp_wrapper.visualize import (
+        log_polamp_eval_artifacts, plot_polamp_trajectory, render_polamp_topdown_frame,
+    )
+except ModuleNotFoundError:
+    create_polamp_env = None
+    log_polamp_eval_artifacts = None
+    plot_polamp_trajectory = None
+    render_polamp_topdown_frame = None
 
 from hrac.safe_mpc_controller import SafeMPC
 import hrac.utils as utils
@@ -867,6 +874,11 @@ def run_hrac(args):
             return state[:, :2]
         controller_goal_dim = goal_dim
     elif args.domain_name == "Polamp":
+        if create_polamp_env is None:
+            raise ModuleNotFoundError(
+                "POLAMP deps missing (polamp_env.lib). "
+                "Copy polamp_env/lib from SPEIS/POLAMP or fix the submodule."
+            )
         env, state_dim, goal_dim, action_dim, renderer = create_polamp_env(args)
         if args.cost_model:
             if args.validate:
